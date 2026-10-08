@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>I Spy A Ghost – Remake</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html,body{height:100%;margin:0;background:#07070d;color:#e8e6ff;font-family:Georgia,'Times New Roman',serif;overflow:hidden}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+#ui{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;background:rgba(5,5,12,.8);padding:20px}
+h1{margin:0;font-size:clamp(32px,7vw,64px);letter-spacing:2px;color:#cfe;text-shadow:0 0 24px #5ff8,0 0 4px #fff}
+p{margin:0;max-width:560px;line-height:1.5;color:#b9b8d8;font-size:15px}
+button{font:inherit;font-size:18px;padding:12px 28px;border-radius:10px;border:1px solid #7fe;background:#10202a;color:#dff;cursor:pointer;min-width:260px;transition:.15s}
+button:hover{background:#17384a;box-shadow:0 0 18px #5ff6}
+.hidden{display:none!important}
+</style></head><body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <h1 id="title">I SPY A GHOST</h1>
+  <p id="msg">Human: <b>WASD/Arrows</b> move, <b>Z/K</b> light burst. Shine the light on the ghost to banish it.<br>Ghost: drop an anvil on the human. Dodge the shadow!</p>
+  <button id="b1"></button><button id="b2"></button>
+  <p id="sub" style="font-size:13px"></p>
+</div>
+<script>
+const W=960,H=600,cv=document.getElementById('c'),ctx=cv.getContext('2d');
+const dark=document.createElement('canvas');dark.width=W;dark.height=H;const dctx=dark.getContext('2d');
+const floor=document.createElement('canvas');floor.width=W;floor.height=H;
+let sc=1,ox=0,oy=0,dpr=1;
+function resize(){dpr=Math.min(devicePixelRatio||1,2);cv.width=innerWidth*dpr;cv.height=innerHeight*dpr;sc=Math.min(cv.width/W,cv.height/H);ox=(cv.width-W*sc)/2;oy=(cv.height-H*sc)/2}
+addEventListener('resize',resize);resize();
+
+// ---- pre-rendered wooden floor ----
+(function(){const f=floor.getContext('2d');let seed=7;const r=()=>(seed=(seed*16807)%2147483647)/2147483647;
+for(let y=0;y<H;y+=40){let x=-r()*120;while(x<W){const w=120+r()*100,l=26+r()*8;f.fillStyle=`hsl(28,${28+r()*10}%,${l}%)`;f.fillRect(x,y,w,39);
+f.fillStyle='rgba(0,0,0,.25)';f.fillRect(x,y+39,w,1);f.fillRect(x+w-1,y,1,39);
+for(let i=0;i<3;i++){f.fillStyle='rgba(0,0,0,.07)';f.fillRect(x+r()*w,y+r()*38,30+r()*50,1)}x+=w}}
+// rug
+f.fillStyle='#5a1f2a';f.fillRect(300,200,360,200);f.strokeStyle='#c9a45a';f.lineWidth=3;f.strokeRect(310,210,340,180);f.strokeRect(322,222,316,156);
+// crates
+[[70,70],[820,90],[800,480],[90,490]].forEach(([x,y])=>{f.fillStyle='#4a3420';f.fillRect(x-30,y-30,60,60);f.strokeStyle='#2a1c10';f.lineWidth=4;f.strokeRect(x-28,y-28,56,56);f.beginPath();f.moveTo(x-28,y-28);f.lineTo(x+28,y+28);f.moveTo(x+28,y-28);f.lineTo(x-28,y+28);f.stroke()});
+})();
+
+// ---- state ----
+let state='menu',mode='solo',time=0,shake=0,lv=0,L,orbs=[],tm=0,lt=0,rainT=0,blinkT=0;
+const L2P={name:'2P',hint:'',task:'banish',goal:0,hp:100,sp:150,cd:3,regen:4,rain:0,blink:0,light:1,limit:0};
+// 10 levels: banish / survive / collect, getting harder (faster ghost, quicker anvils, anvil rain, teleport, smaller light)
+const LV=[
+{name:'First Haunting',hint:'Banish the ghost with your light',task:'banish',hp:60,sp:110,cd:5,regen:2,rain:0,blink:0,light:1},
+{name:'Long Night',hint:'Survive 30 seconds',task:'survive',goal:30,hp:100,sp:130,cd:4,regen:4,rain:0,blink:0,light:1},
+{name:'Stubborn Spirit',hint:'Banish the ghost',task:'banish',hp:100,sp:140,cd:3.5,regen:4,rain:0,blink:0,light:.95},
+{name:'Spirit Orbs',hint:'Collect 5 orbs in 45 seconds',task:'collect',goal:5,limit:45,hp:100,sp:140,cd:3.5,regen:4,rain:0,blink:0,light:.95},
+{name:'Restless Dead',hint:'Banish the ghost (it heals fast)',task:'banish',hp:130,sp:155,cd:3,regen:10,rain:0,blink:0,light:.9},
+{name:'Falling Sky',hint:'Survive the anvil rain for 40 seconds',task:'survive',goal:40,hp:100,sp:150,cd:3,regen:4,rain:2.2,blink:0,light:.9},
+{name:'Dark Hunt',hint:'Collect 7 orbs in 45 seconds',task:'collect',goal:7,limit:45,hp:100,sp:165,cd:2.6,regen:4,rain:3,blink:0,light:.85},
+{name:'Phantom Blink',hint:'Banish the teleporting ghost',task:'banish',hp:130,sp:170,cd:2.6,regen:8,rain:0,blink:2.5,light:.85},
+{name:'Race Against Time',hint:'Collect 9 orbs in 40 seconds',task:'collect',goal:9,limit:40,hp:100,sp:175,cd:2.2,regen:4,rain:1.8,blink:0,light:.8},
+{name:'The Final Ghost',hint:'Banish the boss ghost',task:'banish',hp:220,sp:185,cd:2,regen:12,rain:1.8,blink:2,light:.75}];
+let P,G,anvils,parts,motes=[];
+const keys={};
+for(let i=0;i<45;i++)motes.push({x:Math.random()*W,y:Math.random()*H,v:5+Math.random()*12,r:Math.random()*1.6+.4,p:Math.random()*6});
+const FALL=.8,ANVIL_R=46;
+function reset(){
+  L=mode==='2p'?L2P:LV[lv];
+  P={x:W/2,y:H/2+120,vx:0,vy:0,ang:-Math.PI/2,walk:0,burst:0,cd:0};
+  G={x:W/2,y:110,tx:W/2,ty:110,hp:L.hp,vis:.07,cd:1.5,think:0,lit:false,hit:0};
+  anvils=[];parts=[];shake=0;lt=0;rainT=L.rain;blinkT=0;orbs=[];tm=L.task==='collect'?L.limit:0;
+  if(L.task==='collect')for(let i=0;i<L.goal;i++){let x,y;do{x=60+Math.random()*(W-120);y=80+Math.random()*(H-140)}while(Math.hypot(x-P.x,y-P.y)<120);orbs.push({x,y,p:Math.random()*6})}
+}
+const angDiff=(a,b)=>{let d=a-b;while(d>Math.PI)d-=2*Math.PI;while(d<-Math.PI)d+=2*Math.PI;return d};
+const coneHalf=()=>P.burst>0?.75:.33, coneRange=()=>(P.burst>0?340:255)*L.light*(1+.02*Math.sin(time*40));
+function spawn(x,y,n,col,spd,life,g=0){for(let i=0;i<n;i++){const a=Math.random()*6.283,s=Math.random()*spd;parts.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,l:life*(.5+Math.random()*.5),m:life,c:col,r:1+Math.random()*3,g})}}
+function dropAnvil(){if(G.cd>0)return;G.cd=L.cd;anvils.push({x:G.x,y:G.y,t:0})}
+
+// ---- input ----
+addEventListener('keydown',e=>{const k=e.key.toLowerCase();keys[k]=true;if((k==='z'||k==='k')&&state==='play'&&P.cd<=0){P.burst=.3;P.cd=1.4}if(k.startsWith('arrow')||k===' ')e.preventDefault()});
+addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+cv.addEventListener('pointerdown',e=>{if(state!=='play'||mode!=='2p')return;
+  const x=(e.offsetX*dpr-ox)/sc,y=(e.offsetY*dpr-oy)/sc;
+  if(Math.hypot(x-G.x,y-G.y)<45)dropAnvil();else{G.tx=Math.max(30,Math.min(W-30,x));G.ty=Math.max(40,Math.min(H-40,y))}});
+const ui=document.getElementById('ui');
+function start(m,l){mode=m;if(l!==undefined)lv=l;reset();state='play';ui.classList.add('hidden')}
+const $=id=>document.getElementById(id);
+function showUI(title,msg,btns,sub){$('title').textContent=title;$('msg').innerHTML=msg;$('sub').textContent=sub||'';
+ ['b1','b2'].forEach((id,i)=>{const b=$(id);if(btns[i]){b.classList.remove('hidden');b.textContent=btns[i][0];b.onclick=btns[i][1]}else b.classList.add('hidden')});ui.classList.remove('hidden')}
+function menu(){state='menu';showUI('I SPY A GHOST','Human: <b>WASD/Arrows</b> move, <b>Z/K</b> light burst.<br>The ghost drops anvils — dodge the red shadow!<br>Beat all 10 levels. Each has a different task.',[['Campaign (Levels 1-10)',()=>start('solo',0)],['Local 2P (mouse/touch = Ghost)',()=>start('2p')]],'2P: click to move the ghost, click the ghost to drop an anvil.')}
+function end(msg,title,win){state='over';
+ if(mode==='2p')return showUI(title,msg,[['Play again',()=>start('2p')],['Menu',menu]]);
+ if(win){if(lv>=9)return showUI('YOU WIN!','All 10 levels cleared. The house is finally quiet.',[['Play again',()=>start('solo',0)],['Menu',menu]]);
+  return showUI('LEVEL '+(lv+1)+' CLEAR',msg,[['Next level ▶',()=>start('solo',lv+1)],['Menu',menu]])}
+ showUI(title,msg,[['Retry level '+(lv+1),()=>start('solo',lv)],['Menu',menu]])}
+
+// ---- update ----
+function update(dt){
+  time+=dt;
+  motes.forEach(m=>{m.y-=m.v*dt;m.x+=Math.sin(time+m.p)*8*dt;if(m.y<-5){m.y=H+5;m.x=Math.random()*W}});
+  shake*=Math.pow(.01,dt);
+  if(state!=='play'){return}
+  // player
+  const ax=(keys.d||keys.arrowright?1:0)-(keys.a||keys.arrowleft?1:0),ay=(keys.s||keys.arrowdown?1:0)-(keys.w||keys.arrowup?1:0);
+  const l=Math.hypot(ax,ay)||1,sp=190;
+  P.vx+=((ax/l)*sp-P.vx)*Math.min(1,dt*12);P.vy+=((ay/l)*sp-P.vy)*Math.min(1,dt*12);
+  P.x=Math.max(30,Math.min(W-30,P.x+P.vx*dt));P.y=Math.max(40,Math.min(H-30,P.y+P.vy*dt));
+  const moving=Math.hypot(P.vx,P.vy)>20;
+  if(moving){P.walk+=dt*12;P.ang+=angDiff(Math.atan2(P.vy,P.vx),P.ang)*Math.min(1,dt*10)}
+  P.burst=Math.max(0,P.burst-dt);P.cd=Math.max(0,P.cd-dt);lt+=dt;
+  if(L.task==='survive'){tm+=dt;if(tm>=L.goal){end('You survived the night.','',true);return}}
+  if(L.task==='collect'){tm-=dt;orbs=orbs.filter(o=>{if(Math.hypot(o.x-P.x,o.y-P.y)<26){spawn(o.x,o.y,20,'#fd6',140,.6);return false}return true});
+   if(!orbs.length){end('All spirit orbs collected.','',true);return}
+   if(tm<=0){end('Time ran out.','TIME UP',false);return}}
+  // ghost
+  G.cd=Math.max(0,G.cd-dt);G.think-=dt;G.hit=Math.max(0,G.hit-dt);
+  if(mode==='solo'){
+    const d=Math.hypot(P.x-G.x,P.y-G.y);
+    if(G.think<=0){G.think=.35;
+      if(G.lit){const a=Math.atan2(G.y-P.y,G.x-P.x)+(Math.random()-.5)*1.4;G.tx=G.x+Math.cos(a)*150;G.ty=G.y+Math.sin(a)*150}
+      else{G.tx=P.x+P.vx*.6+(Math.random()-.5)*60;G.ty=P.y+P.vy*.6+(Math.random()-.5)*60}
+      G.tx=Math.max(30,Math.min(W-30,G.tx));G.ty=Math.max(40,Math.min(H-40,G.ty))}
+    const px=P.x+P.vx*FALL,py=P.y+P.vy*FALL;
+    if(!G.lit&&d<130&&Math.hypot(px-G.x,py-G.y)<ANVIL_R-6)dropAnvil();
+  }
+  const gd=Math.hypot(G.tx-G.x,G.ty-G.y);
+  if(gd>4){const gs=(G.lit?L.sp*1.4:L.sp)*Math.min(1,gd/20);G.x+=(G.tx-G.x)/gd*gs*dt;G.y+=(G.ty-G.y)/gd*gs*dt}
+  if(L.rain>0){rainT-=dt;if(rainT<=0){rainT=L.rain*(.7+Math.random()*.6);const a=Math.random()*6.28,r=Math.random()*150;anvils.push({x:Math.max(30,Math.min(W-30,P.x+P.vx*.5+Math.cos(a)*r)),y:Math.max(40,Math.min(H-40,P.y+P.vy*.5+Math.sin(a)*r)),t:0})}}
+  // light check
+  const d=Math.hypot(G.x-P.x,G.y-P.y);
+  G.lit=d<coneRange()&&(Math.abs(angDiff(Math.atan2(G.y-P.y,G.x-P.x),P.ang))<coneHalf()||d<36);
+  G.vis+=((G.lit?1:.07)-G.vis)*Math.min(1,dt*10);
+  blinkT-=dt;
+  if(G.lit){if(L.task==='banish')G.hp-=(P.burst>0?130:16)*dt;G.hit=.1;if(Math.random()<.6)spawn(G.x,G.y,1,'#bff',60,.5);
+    if(L.blink&&blinkT<=0){blinkT=L.blink;spawn(G.x,G.y,25,'#8ff',120,.6);const a=Math.random()*6.28;G.x=Math.max(30,Math.min(W-30,P.x+Math.cos(a)*230));G.y=Math.max(40,Math.min(H-40,P.y+Math.sin(a)*230));G.tx=G.x;G.ty=G.y;spawn(G.x,G.y,25,'#8ff',120,.6)}}
+  else G.hp=Math.min(L.hp,G.hp+L.regen*dt);
+  if(L.task==='banish'&&G.hp<=0){spawn(G.x,G.y,60,'#cff',220,1.2);end(mode==='2p'?'The light banished the ghost. Humans win!':'The ghost is banished.','YOU SURVIVED',true);return}
+  // anvils
+  for(const a of anvils){a.t+=dt;
+    if(!a.done&&a.t>=FALL){a.done=true;shake=14;spawn(a.x,a.y,40,'#aaa',180,.8,200);
+      if(Math.hypot(a.x-P.x,a.y-P.y)<ANVIL_R){spawn(P.x,P.y,50,'#d33',220,1);end('Crushed by an anvil.'+(mode==='2p'?' Ghost wins!':''),mode==='2p'?'GHOST WINS':'CRUSHED',false);return}}}
+  anvils=anvils.filter(a=>a.t<FALL+.6);
+  parts.forEach(p=>{p.l-=dt;p.x+=p.vx*dt;p.y+=p.vy*dt;p.vx*=.97;p.vy=p.vy*.97+p.g*dt});
+  parts=parts.filter(p=>p.l>0);
+}
+
+// ---- render ----
+function drawHuman(){
+  const bob=Math.sin(P.walk)*2,s=Math.sin(P.walk);
+  ctx.save();ctx.translate(P.x,P.y);
+  ctx.fillStyle='rgba(0,0,0,.4)';ctx.beginPath();ctx.ellipse(0,14,16,7,0,0,6.3);ctx.fill();
+  ctx.fillStyle='#222';ctx.fillRect(-9,6+s*3,6,10);ctx.fillRect(3,6-s*3,6,10);
+  const g=ctx.createLinearGradient(0,-16,0,10);g.addColorStop(0,'#6aa0ff');g.addColorStop(1,'#2f4f9a');
+  ctx.fillStyle=g;ctx.beginPath();ctx.ellipse(0,-4+bob*.4,13,15,0,0,6.3);ctx.fill();
+  ctx.fillStyle='#f0c9a0';ctx.beginPath();ctx.arc(0,-20+bob*.4,9,0,6.3);ctx.fill();
+  ctx.fillStyle='#3a2a1a';ctx.beginPath();ctx.arc(0,-23+bob*.4,9,Math.PI,0);ctx.fill();
+  ctx.rotate(P.ang);ctx.fillStyle='#ccc';ctx.fillRect(8,-3,16,6);ctx.fillStyle='#ffe9a0';ctx.fillRect(22,-4,4,8);
+  ctx.restore();
+}
+function drawGhost(){
+  const bob=Math.sin(time*3)*5,jx=G.hit>0?(Math.random()-.5)*5:0;
+  ctx.save();ctx.translate(G.x+jx,G.y+bob);ctx.globalAlpha=G.vis;
+  ctx.fillStyle='rgba(0,0,0,.35)';ctx.beginPath();ctx.ellipse(0,40-bob,20,6,0,0,6.3);ctx.fill();
+  ctx.shadowColor='#8ff';ctx.shadowBlur=24;
+  const g=ctx.createLinearGradient(0,-28,0,32);g.addColorStop(0,'#ffffff');g.addColorStop(1,'#9fd8ee');ctx.fillStyle=g;
+  ctx.beginPath();ctx.moveTo(-22,-6);ctx.arc(0,-6,22,Math.PI,0);ctx.lineTo(22,24);
+  for(let i=0;i<4;i++){const x1=22-i*11,x2=x1-11;ctx.quadraticCurveTo(x1-5.5,24+(i%2?8:-8)+Math.sin(time*7+i)*4,x2,24)}
+  ctx.closePath();ctx.fill();ctx.shadowBlur=0;
+  const sq=G.lit?1.4:1;ctx.fillStyle='#123';ctx.beginPath();ctx.ellipse(-8,-8,4,6*sq,0,0,6.3);ctx.ellipse(8,-8,4,6*sq,0,0,6.3);ctx.fill();
+  ctx.beginPath();ctx.ellipse(0,6,G.lit?7:4,G.lit?9:3,0,0,6.3);ctx.fill();
+  ctx.restore();
+}
+function drawAnvil(a){
+  const k=Math.min(1,a.t/FALL),h=a.t<FALL?Math.pow(1-k,2)*420:0;
+  if(a.t<FALL){ // shadow telegraph
+    const r=ANVIL_R*(.35+.65*k);ctx.fillStyle=`rgba(0,0,0,${.2+.5*k})`;ctx.beginPath();ctx.ellipse(a.x,a.y+30,r,r*.45,0,0,6.3);ctx.fill();
+    ctx.strokeStyle=`rgba(255,80,80,${.25+.5*Math.sin(time*25)**2})`;ctx.lineWidth=2;ctx.beginPath();ctx.ellipse(a.x,a.y+30,ANVIL_R,ANVIL_R*.45,0,0,6.3);ctx.stroke();
+    const y=a.y+30-h;ctx.save();ctx.translate(a.x,y);
+    ctx.fillStyle='#2b2d36';ctx.beginPath();ctx.moveTo(-26,-14);ctx.lineTo(28,-14);ctx.lineTo(12,0);ctx.lineTo(10,12);ctx.lineTo(18,18);ctx.lineTo(-18,18);ctx.lineTo(-10,12);ctx.lineTo(-12,0);ctx.closePath();ctx.fill();
+    ctx.fillStyle='#5b5f70';ctx.fillRect(-26,-14,54,4);ctx.restore();
+  }else{ctx.fillStyle=`rgba(0,0,0,${.5*(1-(a.t-FALL)/.6)})`;ctx.beginPath();ctx.ellipse(a.x,a.y+30,ANVIL_R,ANVIL_R*.45,0,0,6.3);ctx.fill()}
+}
+function render(){
+  ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#07070d';ctx.fillRect(0,0,cv.width,cv.height);
+  const sx=(Math.random()-.5)*shake,sy=(Math.random()-.5)*shake;
+  ctx.setTransform(sc,0,0,sc,ox+sx*sc,oy+sy*sc);
+  ctx.beginPath();ctx.rect(0,0,W,H);ctx.save();ctx.clip();
+  ctx.drawImage(floor,0,0);
+  if(state==='menu'){ctx.fillStyle='rgba(0,0,0,.85)';ctx.fillRect(0,0,W,H);ctx.restore();return}
+  anvils.forEach(drawAnvil);
+  drawGhost();drawHuman();
+  // darkness with flashlight cut-out
+  dctx.globalCompositeOperation='source-over';dctx.clearRect(0,0,W,H);dctx.fillStyle='rgba(4,4,14,.94)';dctx.fillRect(0,0,W,H);
+  dctx.globalCompositeOperation='destination-out';
+  const R=coneRange(),hf=coneHalf(),fx=P.x+Math.cos(P.ang)*14,fy=P.y+Math.sin(P.ang)*14;
+  let rg=dctx.createRadialGradient(fx,fy,10,fx,fy,R);rg.addColorStop(0,'rgba(0,0,0,1)');rg.addColorStop(.7,'rgba(0,0,0,.8)');rg.addColorStop(1,'rgba(0,0,0,0)');
+  dctx.fillStyle=rg;dctx.beginPath();dctx.moveTo(fx,fy);dctx.arc(fx,fy,R,P.ang-hf,P.ang+hf);dctx.closePath();dctx.fill();
+  rg=dctx.createRadialGradient(P.x,P.y,5,P.x,P.y,85);rg.addColorStop(0,'rgba(0,0,0,.9)');rg.addColorStop(1,'rgba(0,0,0,0)');
+  dctx.fillStyle=rg;dctx.beginPath();dctx.arc(P.x,P.y,85,0,6.3);dctx.fill();
+  ctx.drawImage(dark,0,0);
+  // warm light bloom
+  ctx.globalCompositeOperation='lighter';
+  rg=ctx.createRadialGradient(fx,fy,5,fx,fy,R);rg.addColorStop(0,`rgba(255,230,160,${P.burst>0?.5:.22})`);rg.addColorStop(1,'rgba(255,230,160,0)');
+  ctx.fillStyle=rg;ctx.beginPath();ctx.moveTo(fx,fy);ctx.arc(fx,fy,R,P.ang-hf,P.ang+hf);ctx.closePath();ctx.fill();
+  ctx.globalCompositeOperation='source-over';
+  orbs.forEach(o=>{const s=1+.2*Math.sin(time*4+o.p);ctx.shadowColor='#fd6';ctx.shadowBlur=22;ctx.fillStyle='#ffe38a';ctx.beginPath();ctx.arc(o.x,o.y-4*Math.sin(time*2+o.p),7*s,0,6.3);ctx.fill();ctx.shadowBlur=0});
+  // ghost's eyes always faintly visible in the dark
+  if(G.vis<.5){ctx.globalAlpha=.35*(1-G.vis);ctx.fillStyle='#8ff';ctx.shadowColor='#8ff';ctx.shadowBlur=12;const by=G.y+Math.sin(time*3)*5-8;
+    ctx.beginPath();ctx.ellipse(G.x-8,by,3,5,0,0,6.3);ctx.ellipse(G.x+8,by,3,5,0,0,6.3);ctx.fill();ctx.shadowBlur=0;ctx.globalAlpha=1}
+  // particles & dust
+  parts.forEach(p=>{ctx.globalAlpha=Math.max(0,p.l/p.m);ctx.fillStyle=p.c;ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,6.3);ctx.fill()});
+  ctx.fillStyle='#cdd';motes.forEach(m=>{ctx.globalAlpha=.12+.1*Math.sin(time*2+m.p);ctx.beginPath();ctx.arc(m.x,m.y,m.r,0,6.3);ctx.fill()});
+  ctx.globalAlpha=1;
+  // vignette
+  const v=ctx.createRadialGradient(W/2,H/2,H*.35,W/2,H/2,H*.95);v.addColorStop(0,'rgba(0,0,0,0)');v.addColorStop(1,'rgba(0,0,0,.65)');ctx.fillStyle=v;ctx.fillRect(0,0,W,H);
+  // HUD
+  ctx.font='12px Georgia';ctx.textAlign='center';
+  if(L.task==='banish'){ctx.fillStyle='rgba(255,255,255,.12)';ctx.fillRect(W/2-100,14,200,10);ctx.fillStyle='#7ef';ctx.fillRect(W/2-100,14,200*Math.max(0,G.hp)/L.hp,10);ctx.fillStyle='#bcd';ctx.fillText('GHOST',W/2,40)}
+  if(mode==='solo'){ctx.textAlign='left';ctx.font='15px Georgia';ctx.fillStyle='#dfe';ctx.fillText('Level '+(lv+1)+': '+L.name,16,26);ctx.fillStyle='#fd8';
+   ctx.fillText(L.task==='survive'?'Survive: '+Math.max(0,Math.ceil(L.goal-tm))+'s':L.task==='collect'?'Orbs left: '+orbs.length+'   Time: '+Math.max(0,Math.ceil(tm))+'s':'Banish the ghost with your light',16,46);
+   if(lt<3){ctx.globalAlpha=Math.min(1,3-lt);ctx.textAlign='center';ctx.font='48px Georgia';ctx.fillStyle='#cff';ctx.fillText('LEVEL '+(lv+1),W/2,H/2-20);ctx.font='20px Georgia';ctx.fillText(L.hint,W/2,H/2+16);ctx.globalAlpha=1}
+   ctx.font='12px Georgia'}
+  ctx.textAlign='left';ctx.fillStyle='rgba(255,255,255,.12)';ctx.fillRect(20,H-26,120,8);ctx.fillStyle='#fd8';ctx.fillRect(20,H-26,120*(1-P.cd/1.4),8);ctx.fillStyle='#bcd';ctx.fillText('LIGHT BURST (Z/K)',20,H-32);
+  if(mode==='2p'){ctx.textAlign='right';ctx.fillStyle='rgba(255,255,255,.12)';ctx.fillRect(W-140,H-26,120,8);ctx.fillStyle='#f77';ctx.fillRect(W-140,H-26,120*(1-G.cd/L.cd),8);ctx.fillStyle='#bcd';ctx.fillText('ANVIL',W-20,H-32)}
+  ctx.restore();
+}
+let last=performance.now();
+(function loop(n){const dt=Math.min(.05,(n-last)/1000);last=n;update(dt);render();requestAnimationFrame(loop)})(last);
+reset();menu();
+</script></body></html>
