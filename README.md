@@ -2,7 +2,7 @@
 
 > A spooky, fast-paced browser game where a human hunts a ghost with a flashlight—and the ghost fights back with falling anvils.
 
-[![Play now](https://img.shields.io/badge/Play%20now-Live%20demo-7c3aed?style=for-the-badge&logo=googlechrome&logoColor=white)](https://mahatirmahmud688601-wq.github.io/A-Spy-Ghost/)
+[![Play now](https://img.shields.io/badge/Play%20now-Live%20demo-7c3aed?style=for-the-badge&logo=googlechrome&logoColor=white)](https://htmlpreview.github.io/?https://github.com/mahatirmahmud688601-wq/A-Spy-Ghost/blob/main/index.html)
 [![Built with HTML5](https://img.shields.io/badge/Built%20with-HTML5%20Canvas-e34f26?style=flat-square&logo=html5&logoColor=white)](https://developer.mozilla.org/en-US/docs/Web/API/Canvas_API)
 [![License](https://img.shields.io/badge/License-MIT-22c55e?style=flat-square)](#license)
 
@@ -22,7 +22,7 @@
 
 ## Play
 
-**[Open the live game](https://mahatirmahmud688601-wq.github.io/A-Spy-Ghost/)**
+**[Open the live game](https://htmlpreview.github.io/?https://github.com/mahatirmahmud688601-wq/A-Spy-Ghost/blob/main/index.html)**
 
 The game loads instantly in the browser. No installation is needed.
 
